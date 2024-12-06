@@ -2,14 +2,13 @@
 pragma solidity 0.8.26;
 
 import {BaseHook} from "v4-periphery/src/base/hooks/BaseHook.sol";
-
 import {CurrencyLibrary, Currency} from "v4-core/types/Currency.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {BalanceDeltaLibrary, BalanceDelta} from "v4-core/types/BalanceDelta.sol";
-
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
-
 import {Hooks} from "v4-core/libraries/Hooks.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol"; // Import OpenZeppelin's Ownable
+import {IERC20Minimal} from "v4-core/interfaces/external/IERC20Minimal.sol";
 
 // ----------- Plan -----------
 // The hook is designed for users to leverage their bonded asset as a counter-party with their asset to be deposited.
@@ -36,20 +35,26 @@ contract CoPoolHook is BaseHook, Ownable {
     bool private bondCurrencyIsOne;
     address private bondCurrencyAddress;
 
-    mapping(bytes32 => uint256) public bondBalanceOf;
+    mapping(address => uint256) public bondBalanceOf;
+    mapping(bytes32 => uint256) public owedBondBalanceOf;
     mapping(address => bool) public authorisedRouters;
 
     error OnlyByPoolManager();
     error OnlyByAuthorisedRouter();
 
-    // Ownership of bonded assets is correlated to the salt - and this logic is specific to the router.
+    // ? Ownership of bonded assets is correlated to the Salt for Uv4 PositionManager - and this logic is specific to the router.
+    // Therefore, only routers that correlate ownership of receipt to the Salt can leverage the pool.
+    // Eventually, we can default to tx.origin, but for now we'll keep it as is.
     modifier onlyByAuthorisedRouter() {
         if (!authorisedRouters[msg.sender]) revert OnlyByAuthorisedRouter();
         _;
     }
 
     // Initialize BaseHook and ERC20
-    constructor(IPoolManager _manager, address _bondCurrencyAddress, address _authorisedRouter) BaseHook(_manager) {
+    constructor(IPoolManager _manager, address _bondCurrencyAddress, address _authorisedRouter)
+        BaseHook(_manager)
+        Ownable(_msgSender())
+    {
         // On deployment we determine the c
         bondCurrencyAddress = _bondCurrencyAddress;
         authorisedRouters[_authorisedRouter] = true;
@@ -90,13 +95,32 @@ contract CoPoolHook is BaseHook, Ownable {
     /// @param sqrtPriceX96 The sqrt(price) of the pool as a Q64.96
     /// @param tick The current tick after the state of a pool is initialized
     /// @return bytes4 The function selector for the hook
-    function afterInitialize(address, PoolKey calldata key, uint160 sqrtPriceX96, int24 tick)
-        external
-        override
-        onlyPoolManager
-    {
+    function afterInitialize(address, PoolKey calldata key, uint160, int24) external override onlyPoolManager {
         // We set the bond currency to be the token of the pool that matches address of bondCurrencyAddress
-        bondCurrencyIsOne = key.token0 == bondCurrencyAddress;
+        if (key.currency0.unwrap() == bondCurrencyAddress) {
+            bondCurrencyIsOne = false;
+        } else if (key.currency1.unwrap() == bondCurrencyAddress) {
+            bondCurrencyIsOne = true;
+        } else {
+            revert("Bond currency not found in pool");
+        }
+    }
+
+    // Deposit the bond currency into the contract
+    function deposit(uint256 amount) external {
+        address sender = _msgSender();
+        IERC20Minimal(bondCurrencyAddress).transferFrom(sender, address(this), amount);
+        bondBalanceOf[sender] += amount;
+    }
+
+    // Withdraw the bond currency from the contract
+    function withdraw(uint256 amount) external {
+        address sender = _msgSender();
+        if (bondBalanceOf[sender] > amount) {
+            revert("Insufficient bond balance");
+        }
+        Currency.wrap(bondCurrencyAddress).transfer(sender, amount);
+        bondBalanceOf[sender] -= amount;
     }
 
     /// @notice The hook called after liquidity is added
