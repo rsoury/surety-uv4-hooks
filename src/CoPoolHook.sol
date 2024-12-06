@@ -50,19 +50,21 @@ contract CoPoolHook is BaseHook, Ownable {
     // Therefore, only routers that correlate ownership of receipt to the Salt can leverage the pool.
     // ie. PositionManager.sol from Uv4 Periphery has `salt` =  `bytes32(tokenId)`
     // Eventually, we can default to tx.origin, but for now we'll keep it as is.
-    modifier onlyByAuthorisedRouter() {
-        if (!authorisedRouters[msg.sender]) revert OnlyByAuthorisedRouter();
+    modifier onlyByAuthorisedRouter(address sender) {
+        if (!authorisedRouters[sender]) revert OnlyByAuthorisedRouter();
         _;
     }
 
     // Initialize BaseHook and ERC20
-    constructor(IPoolManager _manager, address _bondCurrencyAddress, address _authorisedRouter)
+    constructor(IPoolManager _manager, address _bondCurrencyAddress, address[] memory _authorisedRouters)
         BaseHook(_manager)
         Ownable(_msgSender())
     {
         // On deployment we determine the c
         bondCurrencyAddress = _bondCurrencyAddress;
-        authorisedRouters[_authorisedRouter] = true;
+        for (uint256 i = 0; i < _authorisedRouters.length; i++) {
+            authorisedRouters[_authorisedRouters[i]] = true;
+        }
     }
 
     function addAuthorisedRouter(address _router) external onlyOwner {
@@ -95,20 +97,27 @@ contract CoPoolHook is BaseHook, Ownable {
     }
 
     /// @notice The hook called after the state of a pool is initialized
-    /// @param sender The initial msg.sender for the initialize call
+    /// -param sender The initial msg.sender for the initialize call
     /// @param key The key for the pool being initialized
-    /// @param sqrtPriceX96 The sqrt(price) of the pool as a Q64.96
-    /// @param tick The current tick after the state of a pool is initialized
+    /// -param sqrtPriceX96 The sqrt(price) of the pool as a Q64.96
+    /// -param tick The current tick after the state of a pool is initialized
     /// @return bytes4 The function selector for the hook
-    function afterInitialize(address, PoolKey calldata key, uint160, int24) external override onlyPoolManager {
+    function afterInitialize(address, PoolKey calldata key, uint160, int24)
+        external
+        override
+        onlyPoolManager
+        returns (bytes4)
+    {
         // We set the bond currency to be the token of the pool that matches address of bondCurrencyAddress
-        if (key.currency0.unwrap() == bondCurrencyAddress) {
+        if (Currency.unwrap(key.currency0) == bondCurrencyAddress) {
             bondCurrencyIsOne = false;
-        } else if (key.currency1.unwrap() == bondCurrencyAddress) {
+        } else if (Currency.unwrap(key.currency1) == bondCurrencyAddress) {
             bondCurrencyIsOne = true;
         } else {
             revert("Bond currency not found in pool");
         }
+
+        return (this.afterInitialize.selector);
     }
 
     // Deposit the bond currency into the contract
@@ -133,20 +142,21 @@ contract CoPoolHook is BaseHook, Ownable {
 
     /// @notice The hook called after liquidity is added
     /// @param sender The initial msg.sender for the add liquidity call
-    /// @param key The key for the pool
+    /// -param key The key for the pool
     /// @param params The parameters for adding liquidity
     /// @param delta The caller's balance delta after adding liquidity; the sum of principal delta, fees accrued, and hook delta
-    /// @param feesAccrued The fees accrued since the last time fees were collected from this position
+    /// -param feesAccrued The fees accrued since the last time fees were collected from this position
     /// @param hookData Arbitrary data handed into the PoolManager by the liquidity provider to be passed on to the hook
     /// @return bytes4 The function selector for the hook
     /// @return BalanceDelta The hook's delta in token0 and token1. Positive: the hook is owed/took currency, negative: the hook owes/sent currency
     function afterAddLiquidity(
         address sender,
-        PoolKey calldata key,
+        PoolKey calldata,
         IPoolManager.ModifyLiquidityParams calldata params,
         BalanceDelta delta,
+        BalanceDelta,
         bytes calldata hookData
-    ) external override onlyPoolManager onlyByAuthorisedRouter(sender) {
+    ) external override onlyPoolManager onlyByAuthorisedRouter(sender) returns (bytes4, BalanceDelta) {
         // Check hookData for instruction to use bond currency
         if (hookData.length == 0) {
             return (this.afterAddLiquidity.selector, delta);
@@ -159,7 +169,7 @@ contract CoPoolHook is BaseHook, Ownable {
             // Therefore, here we use the tx.origin.
             if (bondBalanceOf[tx.origin] > 0) {
                 // tokenId is the sender + salt.
-                bytes tokenId = abi.encodePacked(sender, params.salt);
+                bytes memory tokenId = abi.encodePacked(sender, params.salt);
                 // Currency bondCurrency = bondCurrencyIsOne ? key.currency0 : key.currency1;
 
                 // Determine how much non bond currency is being single staked
@@ -171,6 +181,7 @@ contract CoPoolHook is BaseHook, Ownable {
                 if (bondCurrencyIsOne) {
                     require(amount0 > amount1, "The bond currency must be the token of lesser value");
                     difference = amount0 - amount1;
+                    // TODO: The delta will not be equal. It's based on an algo for determining the value required of each token based on the existing pool.
                     delta = toBalanceDelta(amount0, amount1 + difference);
                 } else {
                     require(amount1 > amount0, "The bond currency must be the token of lesser value");
@@ -206,8 +217,11 @@ contract CoPoolHook is BaseHook, Ownable {
         PoolKey calldata key,
         IPoolManager.ModifyLiquidityParams calldata params,
         BalanceDelta delta,
+        BalanceDelta feesAccrued,
         bytes calldata hookData
-    ) external override onlyPoolManager onlyByAuthorisedRouter(sender) {
+    ) external override onlyPoolManager onlyByAuthorisedRouter(sender) returns (bytes4, BalanceDelta) {
         // TODO: Implement
+
+        return (this.afterRemoveLiquidity.selector, delta);
     }
 }
