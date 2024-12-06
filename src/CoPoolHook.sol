@@ -9,6 +9,7 @@ import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol"; // Import OpenZeppelin's Ownable
 import {IERC20Minimal} from "v4-core/interfaces/external/IERC20Minimal.sol";
+import {console} from "forge-std/console.sol";
 
 // ----------- Plan -----------
 // The hook is designed for users to leverage their bonded asset as a counter-party with their asset to be deposited.
@@ -40,8 +41,8 @@ contract CoPoolHook is BaseHook, Ownable {
     mapping(address => bool) public authorisedRouters;
 
     // liquidity actions
-    bytes constant BOND = hex"00";
-    bytes constant DELEGATE = hex"01";
+    bytes public constant BOND = hex"00";
+    bytes public constant DELEGATE = hex"01";
 
     error OnlyByPoolManager();
     error OnlyByAuthorisedRouter();
@@ -178,21 +179,27 @@ contract CoPoolHook is BaseHook, Ownable {
                 // Determine which token has the lesser delta
                 int256 amount0 = delta.amount0();
                 int256 amount1 = delta.amount1();
-                if (bondCurrencyIsOne) {
-                    require(amount0 > amount1, "The bond currency must be the token of lesser value");
-                    difference = amount0 - amount1;
-                    // TODO: The delta will not be equal. It's based on an algo for determining the value required of each token based on the existing pool.
-                    delta = toBalanceDelta(amount0, amount1 + difference);
-                } else {
-                    require(amount1 > amount0, "The bond currency must be the token of lesser value");
-                    difference = amount1 - amount0;
-                    delta = toBalanceDelta(amount0 + difference, amount1);
-                }
 
-                require(bondBalanceOf[tx.origin] > difference, "User does not have enough bonds to co-pool");
+                console.log("amount0:");
+                console.log(amount0);
+                console.log("amount1:");
+                console.log(amount1);
 
-                bondBalanceOf[tx.origin] -= difference;
-                bondOwed[tokenId] += difference; // Bond that is owed by the user is relative to the token holder.
+                // if (bondCurrencyIsOne) {
+                //     require(amount0 > amount1, "The bond currency must be the token of lesser value");
+                //     difference = amount0 - amount1;
+                //     // TODO: The delta will not be equal. It's based on an algo for determining the value required of each token based on the existing pool.
+                //     delta = toBalanceDelta(amount0, amount1 + difference);
+                // } else {
+                //     require(amount1 > amount0, "The bond currency must be the token of lesser value");
+                //     difference = amount1 - amount0;
+                //     delta = toBalanceDelta(amount0 + difference, amount1);
+                // }
+
+                // require(bondBalanceOf[tx.origin] > difference, "User does not have enough bonds to co-pool");
+
+                // bondBalanceOf[tx.origin] -= difference;
+                // bondOwed[tokenId] += difference; // Bond that is owed by the user is relative to the token holder.
             }
 
             revert("User does not have enough bonds to co-pool");

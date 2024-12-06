@@ -17,7 +17,7 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {SqrtPriceMath} from "v4-core/libraries/SqrtPriceMath.sol";
 import {LiquidityAmounts} from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol";
 
-import "forge-std/console.sol";
+import {console} from "forge-std/console.sol";
 import {CoPoolHook} from "../src/CoPoolHook.sol";
 
 contract CoPoolHookTest is Test, Deployers {
@@ -94,8 +94,13 @@ contract CoPoolHookTest is Test, Deployers {
         // uint160 sqrtPriceAtTickUpper = TickMath.getSqrtPriceAtTick(60);
 
         // Calculate the amounts for liquidity, but set one to zero
-        // (uint256 amount0Delta, uint256 amount1Delta) =
-        //     LiquidityAmounts.getAmountsForLiquidity(SQRT_PRICE_1_1, sqrtPriceAtTickLower, sqrtPriceAtTickUpper, 1 ether);
+        (uint256 amount0Delta, uint256 amount1Delta) =
+            LiquidityAmounts.getAmountsForLiquidity(SQRT_PRICE_1_1, sqrtPriceAtTickLower, sqrtPriceAtTickUpper, 1 ether);
+
+        console.log("amount0Delta:");
+        console.log(amount0Delta);
+        console.log("amount1Delta:");
+        console.log(amount1Delta);
 
         modifyLiquidityRouter.modifyLiquidity{value: 0}(
             key,
