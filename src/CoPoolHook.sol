@@ -11,8 +11,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20Minimal} from "@uniswap/v4-core/src/interfaces/external/IERC20Minimal.sol";
 import {console} from "forge-std/console.sol";
 import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
-import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
-import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 
 import {LiquidityAmounts} from "./libraries/LiquidityAmounts.sol";
 
@@ -125,99 +124,79 @@ contract CoPoolHook is BaseHook {
 
             bytes memory callerId = abi.encodePacked(sender, params.salt);
 
+            BalanceDelta hookDelta;
+
             if (tokenSelection == 0) {
+                // Here, we're now matching what token1 is available since token0 is being deposited.
+
                 // token0DeltaFor[callerId] += amount0; // this negative value means that the caller is in a deficit position relative to the hook
 
                 // The more negative the deltaOfToken0, the more deficit the callers are to the hook. Therefore, the hook has more token than amount1
                 if (deltaOfToken1 <= amount1) {
                     // We can match the deposit
                     // Settle the amount0 from the hook to the poolManager
-                    deltaOfToken0 -= amount0; // negative minus negative is positive
-                    _settle(key.currency0, poolManager, address(this), SignedMath.abs(amount0));
+                    deltaOfToken1 -= amount1; // negative minus negative is positive
+                    _settle(key.currency1, poolManager, address(this), SignedMath.abs(amount1));
+                    hookDelta = toBalanceDelta(0, amount1);
                 } else {
                     // match amount is what is whatever is available.
-                    int256 matchDelta = deltaOfToken1;
-                    int256 newDelta1 = amount1 - matchDelta;
-                    deltaOfToken1 -= matchDelta;
+                    int256 hookDelta1 = deltaOfToken1;
+                    // int256 newDelta1 = amount1 - matchDelta;
+                    deltaOfToken1 = 0;
 
                     // adding liquidity means that the deltas are negative.
-                    if (matchDelta < 0) {
-                        _settle(key.currency1, poolManager, address(this), SignedMath.abs(matchDelta));
+                    if (hookDelta1 < 0) {
+                        _settle(key.currency1, poolManager, address(this), SignedMath.abs(hookDelta1));
                     }
 
-                    // Now account for the new delta0 relative to newDelta1, and deduct from the original amount1. The difference is what the hook takes.
-                    // This should allow for the LP to provide some token0 liquidity to match the remaining token1, that was not covered in a match by the Hook.
-                    PoolId poolId = key.toId();
-                    uint256 liquidity = StateLibrary.getLiquidity(manager, poolId);
-                    (, int24 tick,,) = StateLibrary.getSlot0(manager, poolId);
-                    uint160 sqrtPriceAX96 = TickMath.getSqrtRatioAtTick(tick + params.tickLower);
-                    uint160 sqrtPriceBX96 = TickMath.getSqrtRatioAtTick(tick + params.tickUpper);
-                    uint256 newAmount0 =
-                        LiquidityAmounts.getAmount0ForLiquidity(sqrtPriceAX96, sqrtPriceBX96, liquidity);
-                    int256 newDelta0 = -int256(newAmount0);
+                    // Now account for the new delta0 relative to newDelta1.
+                    // The caller is essentially depositing what has not been matched into the hook.
 
-                    BalanceDelta newDelta = toBalanceDelta(newDelta0, newDelta1);
-                    // _take(key.currency1, poolManager, address(this), SignedMath.abs(newDelta1));
-                }
+                    // Simplest way to do this is to apply a ratio
+                    // int256 hookDelta0 = (hookDelta1 / amount1) * amount0;
+                    int256 hookDelta0 =
+                        FullMath.mulDiv(SignedMath.abs(hookDelta1), SignedMath.abs(amount0), SignedMath.abs(amount1));
+                    deltaOfToken0 += hookDelta0;
+                    // hookDelta0 is positive indicating that the manager is in a deficit position relative to the hook.
+                    _take(key.currency0, poolManager, address(this), hookDelta0);
 
-                if (pendingBalanceOfToken1 >= amount1) {
-                    // We can match the deposit.
-                    uint256 matchAmount = SignedMath.abs(delta.amount1());
-                    _settle(key.currency1, poolManager, address(this), matchAmount);
-                    pendingBalanceOfToken1 -= matchAmount;
-                    usedBalanceOfToken1 += matchAmount;
-                } else {
-                    // match amount is what is whatever is available.
-                    uint256 matchAmount = pendingBalanceOfToken1;
-                    uint256 newDelta = amount1 + matchAmount;
-                    // We now need to recalculate the delta for the difference to determine what token1 needs to be taken and held.
-
-                    // _take(key.currency1, poolManager, address(this), takeAmount);
+                    hookDelta = toBalanceDelta(hookDelta0, hookDelta1);
                 }
             } else {
-                // Else 1
+                // Else tokenSelection = 1
+
+                if (deltaOfToken0 <= amount0) {
+                    // We can match the deposit
+                    // Settle the amount0 from the hook to the poolManager
+                    deltaOfToken0 -= amount0; // negative minus negative is positive
+                    _settle(key.currency0, poolManager, address(this), SignedMath.abs(amount0));
+                    hookDelta = toBalanceDelta(amount0, 0);
+                } else {
+                    // match amount is what is whatever is available.
+                    int256 hookDelta0 = deltaOfToken0;
+                    // int256 newDelta1 = amount1 - matchDelta;
+                    deltaOfToken0 = 0;
+
+                    // adding liquidity means that the deltas are negative.
+                    if (hookDelta0 < 0) {
+                        _settle(key.currency0, poolManager, address(this), SignedMath.abs(hookDelta0));
+                    }
+
+                    // Now account for the new delta1 relative to newDelta0.
+                    // int256 hookDelta1 = (hookDelta0 / amount0) * amount1;
+                    int256 hookDelta1 =
+                        FullMath.mulDiv(SignedMath.abs(hookDelta0), SignedMath.abs(amount1), SignedMath.abs(amount0));
+                    deltaOfToken1 += hookDelta1;
+                    // hookDelta0 is positive indicating that the manager is in a deficit position relative to the hook.
+                    _take(key.currency1, poolManager, address(this), hookDelta1);
+
+                    hookDelta = toBalanceDelta(hookDelta0, hookDelta1);
+                }
             }
 
-            // if (bondBalanceOf[tx.origin] > 0) {
-            //     // tokenId is the sender + salt.
-            //     bytes memory tokenId = abi.encodePacked(sender, params.salt);
-            //     // Currency bondCurrency = bondCurrencyIsOne ? key.currency0 : key.currency1;
-
-            //     // Determine how much non bond currency is being single staked
-            //     // Then, use equivalent in bond currency to co-pool.
-            //     uint256 difference;
-            //     // Determine which token has the lesser delta
-
-            // console.log("amount0:");
-            // console.log(amount0);
-            // console.log("amount1:");
-            // console.log(amount1);
-
-            //     // if (bondCurrencyIsOne) {
-            //     //     require(amount0 > amount1, "The bond currency must be the token of lesser value");
-            //     //     difference = amount0 - amount1;
-            //     //     // TODO: The delta will not be equal. It's based on an algo for determining the value required of each token based on the existing pool.
-            //     //     delta = toBalanceDelta(amount0, amount1 + difference);
-            //     // } else {
-            //     //     require(amount1 > amount0, "The bond currency must be the token of lesser value");
-            //     //     difference = amount1 - amount0;
-            //     //     delta = toBalanceDelta(amount0 + difference, amount1);
-            //     // }
-
-            //     // require(bondBalanceOf[tx.origin] > difference, "User does not have enough bonds to co-pool");
-
-            //     // bondBalanceOf[tx.origin] -= difference;
-            //     // bondOwed[tokenId] += difference; // Bond that is owed by the user is relative to the token holder.
-            // } else {
-            //     revert("User does not have enough bonds to co-pool");
-            // }
-
-            // In this case, the hook is covering the bond currency delta.
-            // We send a negative delta for the bond currency because the hook is now in a deficit position relative to the pool.
+            // eg. Hook delta is negative for as the hook is now in a deficit position relative to the pool.
             // ----- This will actually balance out the caller delta.
-            // We also need to settle the hook's currency to the the poolManager
-            _settle(key.currency0, poolManager, address(this), SignedMath.abs(delta.amount0()));
-            return (this.afterAddLiquidity.selector, toBalanceDelta(delta.amount0(), 0));
+            return (this.afterAddLiquidity.selector, hookDelta);
         }
 
         return (this.afterAddLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
