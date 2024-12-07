@@ -52,11 +52,17 @@ contract CoPoolHook is BaseHook {
     // liquidity actions
     bytes public constant COPOOL = hex"00";
 
+    Currency private token0;
+    Currency private token1;
+
     int256 public deltaOfToken0;
     int256 public deltaOfToken1;
 
     mapping(bytes => int256) public token0DeltaFor;
     mapping(bytes => int256) public token1DeltaFor;
+
+    mapping(address => uint256) public token0BalanceOf;
+    mapping(address => uint256) public token1BalanceOf;
 
     error OnlyByPoolManager();
 
@@ -68,7 +74,7 @@ contract CoPoolHook is BaseHook {
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: false,
-            afterInitialize: false,
+            afterInitialize: true,
             beforeAddLiquidity: false,
             beforeRemoveLiquidity: false,
             afterAddLiquidity: true,
@@ -82,6 +88,55 @@ contract CoPoolHook is BaseHook {
             afterAddLiquidityReturnDelta: true,
             afterRemoveLiquidityReturnDelta: false
         });
+    }
+
+    /// @notice The hook called after the state of a pool is initialized
+    /// -param sender The initial msg.sender for the initialize call
+    /// @param key The key for the pool being initialized
+    /// -param sqrtPriceX96 The sqrt(price) of the pool as a Q64.96
+    /// -param tick The current tick after the state of a pool is initialized
+    /// @return bytes4 The function selector for the hook
+    function afterInitialize(address, PoolKey calldata key, uint160, int24)
+        external
+        override
+        onlyPoolManager
+        returns (bytes4)
+    {
+        token0 = key.currency0;
+        token1 = key.currency1;
+
+        return this.afterInitialize.selector;
+    }
+
+    // We still require a direct deposit mechanism.
+    // This way there is a counter-party token to match with the LP modifyPosition.
+    function deposit(uint256 amount, bool isZero) external {
+        address sender = _msgSender();
+        IERC20Minimal(isZero ? token0 : token1).transferFrom(sender, address(this), amount);
+        if (isZero) {
+            token0BalanceOf[sender] += amount;
+            deltaOfToken0 += -int256(amount);
+        } else {
+            token1BalanceOf[sender] += amount;
+            deltaOfToken1 += -int256(amount);
+        }
+    }
+
+    // Withdraw the bond currency from the contract
+    function withdraw(uint256 amount, bool isZero) external {
+        address sender = _msgSender();
+        if (isZero) {
+            require(token0BalanceOf[sender] >= amount, "Insufficient balance for token0");
+            // TODO: We'll need to unpool what has been matched already.
+            token0.transfer(sender, amount);
+            token0BalanceOf[sender] -= amount;
+            deltaOfToken0 += int256(amount);
+        } else {
+            require(token1BalanceOf[sender] >= amount, "Insufficient balance for token1");
+            token1.transfer(sender, amount);
+            token1BalanceOf[sender] -= amount;
+            deltaOfToken1 += int256(amount);
+        }
     }
 
     /// @notice The hook called after liquidity is added
@@ -133,12 +188,12 @@ contract CoPoolHook is BaseHook {
                 // token0DeltaFor[callerId] += amount0; // this negative value means that the caller is in a deficit position relative to the hook
 
                 // The more negative the deltaOfToken0, the more deficit the callers are to the hook. Therefore, the hook has more token than amount1
+                int256 matchAmount;
                 if (deltaOfToken1 <= amount1) {
                     // We can match the deposit
                     // Settle the amount0 from the hook to the poolManager
                     deltaOfToken1 -= amount1; // negative minus negative is positive
-                    _settle(key.currency1, SignedMath.abs(amount1));
-                    hookDelta = toBalanceDelta(0, amount1);
+                    matchAmount = amount1;
                 } else {
                     // match amount is what is whatever is available.
                     int256 hookDelta1 = deltaOfToken1;
@@ -150,21 +205,10 @@ contract CoPoolHook is BaseHook {
                         _settle(key.currency1, SignedMath.abs(hookDelta1));
                     }
 
-                    // Now account for the new delta0 relative to newDelta1.
-                    // The caller is essentially depositing what has not been matched into the hook.
-
-                    // Simplest way to do this is to apply a ratio
-                    // int256 hookDelta0 = (hookDelta1 / amount1) * amount0;
-                    int256 hookDelta0 =
-                        FullMath.mulDiv(SignedMath.abs(hookDelta1), SignedMath.abs(amount0), SignedMath.abs(amount1));
-                    deltaOfToken0 += hookDelta0;
-                    // hookDelta0 is positive indicating that the manager is in a deficit position relative to the hook.
-
-                    // TODO: This may not work, as the poolManager has not receives transfer from the user/payer yet...
-                    _take(key.currency0, hookDelta0);
-
-                    hookDelta = toBalanceDelta(hookDelta0, hookDelta1);
+                    hookDelta = toBalanceDelta(0, hookDelta1);
                 }
+                _settle(key.currency1, SignedMath.abs(matchAmount));
+                hookDelta = toBalanceDelta(0, matchAmount);
             } else {
                 // Else tokenSelection = 1
 

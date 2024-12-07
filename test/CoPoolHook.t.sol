@@ -45,26 +45,15 @@ contract CoPoolHookTest is Test, Deployers {
         //     Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_ADD_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
         //         | Hooks.AFTER_ADD_LIQUIDITY_RETURNS_DELTA_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
         // );
-        uint160 flags = uint160(
-            Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_ADD_LIQUIDITY_FLAG | Hooks.AFTER_ADD_LIQUIDITY_RETURNS_DELTA_FLAG
-        );
+        uint160 flags = uint160(Hooks.AFTER_ADD_LIQUIDITY_FLAG | Hooks.AFTER_ADD_LIQUIDITY_RETURNS_DELTA_FLAG);
 
         address hookAddress = address(flags);
 
-        address[] memory authorisedRouters = new address[](2);
-        authorisedRouters[0] = address(swapRouter);
-        authorisedRouters[1] = address(modifyLiquidityRouter);
         // deployCodeTo("CoPoolHook.sol", abi.encode(manager, address(bondToken), authorisedRouters), hookAddress);
         deployCodeTo("CoPoolHook.sol", abi.encode(manager, Currency.unwrap(token0), authorisedRouters), hookAddress);
 
         // Deploy our hook
         hook = CoPoolHook(hookAddress);
-
-        MockERC20(Currency.unwrap(token0)).approve(address(hook), type(uint256).max);
-
-        // Remove approval for token0 -- giving it over to Hook
-        MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), 0);
-        MockERC20(Currency.unwrap(token0)).approve(address(modifyLiquidityRouter), 0);
 
         // Initialize a pool
         (key,) = initPool(
@@ -74,13 +63,6 @@ contract CoPoolHookTest is Test, Deployers {
             100, // Swap Fees - 1 bps -- fee / 100 * 2
             SQRT_PRICE_1_1 // Initial Sqrt(P) value = 1
         );
-        // (key,) = initPool(
-        //     bondTokenCurrency, // Currency 0 = Bond
-        //     cpTokenCurrency, // Currency 1 = Counterparty
-        //     hook, // Hook Contract
-        //     100, // Swap Fees - 1 bps -- fee / 100 * 2
-        //     SQRT_PRICE_1_1 // Initial Sqrt(P) value = 1
-        // );
 
         // Add initial liquidity to the pool
 
@@ -123,11 +105,13 @@ contract CoPoolHookTest is Test, Deployers {
     }
 
     // Here we unapprove the token0 from the sender, and leverage the token0 in hook.
-    function test_addSingleToken1Liquidity() public {
+    function test_addSingleToken0Liquidity() public {
         // Start by bonding the bondToken
-        hook.deposit(10 ether); // bond 1 ether of bondToken
 
-        bytes memory hookData = hook.BOND();
+        bytes action = hook.COPOOL();
+        uint8 tokenSelection = 0;
+
+        bytes memory hookData = abi.encode(action, tokenSelection);
 
         uint256 tokenId = 123;
         modifyLiquidityRouter.modifyLiquidity{value: 0}(
@@ -140,5 +124,8 @@ contract CoPoolHookTest is Test, Deployers {
             }),
             hookData
         );
+
+        // Check the poolManager's balance of token0
+        // Check the hook's delta of token0
     }
 }
