@@ -122,6 +122,7 @@ contract CoPoolHook is BaseHook {
             int256 amount0 = delta.amount0();
             int256 amount1 = delta.amount1();
 
+            // TODO: Manage ownership - ie. how to determine whether the user has indeed co-pooled, and how much they're owed.
             bytes memory callerId = abi.encodePacked(sender, params.salt);
 
             BalanceDelta hookDelta;
@@ -136,7 +137,7 @@ contract CoPoolHook is BaseHook {
                     // We can match the deposit
                     // Settle the amount0 from the hook to the poolManager
                     deltaOfToken1 -= amount1; // negative minus negative is positive
-                    _settle(key.currency1, poolManager, address(this), SignedMath.abs(amount1));
+                    _settle(key.currency1, SignedMath.abs(amount1));
                     hookDelta = toBalanceDelta(0, amount1);
                 } else {
                     // match amount is what is whatever is available.
@@ -146,7 +147,7 @@ contract CoPoolHook is BaseHook {
 
                     // adding liquidity means that the deltas are negative.
                     if (hookDelta1 < 0) {
-                        _settle(key.currency1, poolManager, address(this), SignedMath.abs(hookDelta1));
+                        _settle(key.currency1, SignedMath.abs(hookDelta1));
                     }
 
                     // Now account for the new delta0 relative to newDelta1.
@@ -158,7 +159,9 @@ contract CoPoolHook is BaseHook {
                         FullMath.mulDiv(SignedMath.abs(hookDelta1), SignedMath.abs(amount0), SignedMath.abs(amount1));
                     deltaOfToken0 += hookDelta0;
                     // hookDelta0 is positive indicating that the manager is in a deficit position relative to the hook.
-                    _take(key.currency0, poolManager, address(this), hookDelta0);
+
+                    // TODO: This may not work, as the poolManager has not receives transfer from the user/payer yet...
+                    _take(key.currency0, hookDelta0);
 
                     hookDelta = toBalanceDelta(hookDelta0, hookDelta1);
                 }
@@ -169,7 +172,7 @@ contract CoPoolHook is BaseHook {
                     // We can match the deposit
                     // Settle the amount0 from the hook to the poolManager
                     deltaOfToken0 -= amount0; // negative minus negative is positive
-                    _settle(key.currency0, poolManager, address(this), SignedMath.abs(amount0));
+                    _settle(key.currency0, SignedMath.abs(amount0));
                     hookDelta = toBalanceDelta(amount0, 0);
                 } else {
                     // match amount is what is whatever is available.
@@ -179,7 +182,7 @@ contract CoPoolHook is BaseHook {
 
                     // adding liquidity means that the deltas are negative.
                     if (hookDelta0 < 0) {
-                        _settle(key.currency0, poolManager, address(this), SignedMath.abs(hookDelta0));
+                        _settle(key.currency0, SignedMath.abs(hookDelta0));
                     }
 
                     // Now account for the new delta1 relative to newDelta0.
@@ -188,7 +191,7 @@ contract CoPoolHook is BaseHook {
                         FullMath.mulDiv(SignedMath.abs(hookDelta0), SignedMath.abs(amount1), SignedMath.abs(amount0));
                     deltaOfToken1 += hookDelta1;
                     // hookDelta0 is positive indicating that the manager is in a deficit position relative to the hook.
-                    _take(key.currency1, poolManager, address(this), hookDelta1);
+                    _take(key.currency1, hookDelta1);
 
                     hookDelta = toBalanceDelta(hookDelta0, hookDelta1);
                 }
@@ -224,35 +227,26 @@ contract CoPoolHook is BaseHook {
     //     return (this.afterRemoveLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
     // }
 
+    // Adopted from: https://github.com/Uniswap/v4-core/blob/182712cf7146f31cd5c969749bbe3a188f030d1a/test/utils/CurrencySettler.sol#L19
     /// @notice Settle (pay) a currency to the PoolManager
     /// @param currency Currency to settle
-    /// @param manager IPoolManager to settle to
-    /// @param payer Address of the payer, the token sender
     /// @param amount Amount to send
-    // Adopted from: https://github.com/Uniswap/v4-core/blob/182712cf7146f31cd5c969749bbe3a188f030d1a/test/utils/CurrencySettler.sol#L19
-    function _settle(Currency currency, IPoolManager manager, address payer, uint256 amount) internal {
+    function _settle(Currency currency, uint256 amount) internal {
         // for native currencies or burns, calling sync is not required
-        // short circuit for ERC-6909 burns to support ERC-6909-wrapped native tokens
         if (currency.isAddressZero()) {
-            manager.settle{value: amount}();
+            poolManager.settle{value: amount}();
         } else {
-            manager.sync(currency);
-            if (payer != address(this)) {
-                IERC20Minimal(Currency.unwrap(currency)).transferFrom(payer, address(manager), amount);
-            } else {
-                IERC20Minimal(Currency.unwrap(currency)).transfer(address(manager), amount);
-            }
-            manager.settle();
+            poolManager.sync(currency);
+            IERC20Minimal(Currency.unwrap(currency)).transfer(address(poolManager), amount);
+            poolManager.settle();
         }
     }
 
+    // Adopted from: https://github.com/Uniswap/v4-core/blob/182712cf7146f31cd5c969749bbe3a188f030d1a/test/utils/CurrencySettler.sol#L19
     /// @notice Take (receive) a currency from the PoolManager
     /// @param currency Currency to take
-    /// @param manager IPoolManager to take from
-    /// @param recipient Address of the recipient, the token receiver
     /// @param amount Amount to receive
-    // Adopted from: https://github.com/Uniswap/v4-core/blob/182712cf7146f31cd5c969749bbe3a188f030d1a/test/utils/CurrencySettler.sol#L19
-    function _take(Currency currency, IPoolManager manager, address recipient, uint256 amount) internal {
-        manager.take(currency, recipient, amount);
+    function _take(Currency currency, uint256 amount) internal {
+        poolManager.take(currency, address(this), amount);
     }
 }
