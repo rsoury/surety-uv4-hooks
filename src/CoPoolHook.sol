@@ -123,6 +123,8 @@ contract CoPoolHook is BaseHook, Ownable {
     }
 
     // Deposit the bond currency into the contract
+
+    // TODO: Could also turn this into a deposit for either token in the pool. Then there would be no correlation between the bond currency and the counter-party asset.
     function deposit(uint256 amount) external {
         address sender = _msgSender();
         // address sender = tx.origin;
@@ -184,10 +186,10 @@ contract CoPoolHook is BaseHook, Ownable {
             int256 amount0 = delta.amount0();
             int256 amount1 = delta.amount1();
 
-            console.log("amount0:");
-            console.log(amount0);
-            console.log("amount1:");
-            console.log(amount1);
+            // console.log("amount0:");
+            // console.log(amount0);
+            // console.log("amount1:");
+            // console.log(amount1);
 
             //     // if (bondCurrencyIsOne) {
             //     //     require(amount0 > amount1, "The bond currency must be the token of lesser value");
