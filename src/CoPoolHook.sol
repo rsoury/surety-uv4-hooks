@@ -212,7 +212,7 @@ contract CoPoolHook is BaseHook, Ownable {
             // We send a negative delta for the bond currency because the hook is now in a deficit position relative to the pool.
             // ----- This will actually balance out the caller delta.
             // We also need to settle the hook's currency to the the poolManager
-            _settle(key.currency0, poolManager, address(this), SignedMath.abs(delta.amount0()), false);
+            _settle(key.currency0, poolManager, address(this), SignedMath.abs(delta.amount0()));
             return (this.afterAddLiquidity.selector, toBalanceDelta(delta.amount0(), 0));
         } else if (hookData.length == DELEGATE.length && keccak256(hookData) == keccak256(DELEGATE)) {
             // TODO: Implement
@@ -248,14 +248,11 @@ contract CoPoolHook is BaseHook, Ownable {
     /// @param manager IPoolManager to settle to
     /// @param payer Address of the payer, the token sender
     /// @param amount Amount to send
-    /// @param burn If true, burn the ERC-6909 token, otherwise ERC20-transfer to the PoolManager
-    // Reference: https://github.com/Uniswap/v4-core/blob/182712cf7146f31cd5c969749bbe3a188f030d1a/test/utils/CurrencySettler.sol#L19
-    function _settle(Currency currency, IPoolManager manager, address payer, uint256 amount, bool burn) internal {
+    // Adopted from: https://github.com/Uniswap/v4-core/blob/182712cf7146f31cd5c969749bbe3a188f030d1a/test/utils/CurrencySettler.sol#L19
+    function _settle(Currency currency, IPoolManager manager, address payer, uint256 amount) internal {
         // for native currencies or burns, calling sync is not required
         // short circuit for ERC-6909 burns to support ERC-6909-wrapped native tokens
-        if (burn) {
-            manager.burn(payer, currency.toId(), amount);
-        } else if (currency.isAddressZero()) {
+        if (currency.isAddressZero()) {
             manager.settle{value: amount}();
         } else {
             manager.sync(currency);
@@ -266,5 +263,15 @@ contract CoPoolHook is BaseHook, Ownable {
             }
             manager.settle();
         }
+    }
+
+    /// @notice Take (receive) a currency from the PoolManager
+    /// @param currency Currency to take
+    /// @param manager IPoolManager to take from
+    /// @param recipient Address of the recipient, the token receiver
+    /// @param amount Amount to receive
+    // Adopted from: https://github.com/Uniswap/v4-core/blob/182712cf7146f31cd5c969749bbe3a188f030d1a/test/utils/CurrencySettler.sol#L19
+    function _take(Currency currency, IPoolManager manager, address recipient, uint256 amount) internal {
+        manager.take(currency, recipient, amount);
     }
 }

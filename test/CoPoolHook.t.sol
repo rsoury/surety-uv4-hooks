@@ -122,29 +122,12 @@ contract CoPoolHookTest is Test, Deployers {
         // );
     }
 
-    function test_addLiquidity() public {
+    // Here we unapprove the token0 from the sender, and leverage the token0 in hook.
+    function test_addSingleToken1Liquidity() public {
         // Start by bonding the bondToken
-
-        // MockERC20(Currency.unwrap(token0)).mint(address(tx.origin), 10 ether);
-
         hook.deposit(10 ether); // bond 1 ether of bondToken
 
         bytes memory hookData = hook.BOND();
-
-        // // Now we add liquidity in a single stake
-
-        // // Calculate the sqrt prices at the desired ticks
-        // uint160 sqrtPriceAtTickLower = TickMath.getSqrtPriceAtTick(-60);
-        // uint160 sqrtPriceAtTickUpper = TickMath.getSqrtPriceAtTick(60);
-
-        // // Calculate the amounts for liquidity, but set one to zero
-        // (uint256 amount0Delta, uint256 amount1Delta) =
-        //     LiquidityAmounts.getAmountsForLiquidity(SQRT_PRICE_1_1, sqrtPriceAtTickLower, sqrtPriceAtTickUpper, 1 ether);
-
-        // console.log("amount0Delta:");
-        // console.log(amount0Delta);
-        // console.log("amount1Delta:");
-        // console.log(amount1Delta);
 
         uint256 tokenId = 123;
         modifyLiquidityRouter.modifyLiquidity{value: 0}(
@@ -157,7 +140,5 @@ contract CoPoolHookTest is Test, Deployers {
             }),
             hookData
         );
-
-        // Assert that the amount staked is correct and that both tokens are equal in the pool.
     }
 }
