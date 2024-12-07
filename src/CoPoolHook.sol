@@ -11,23 +11,37 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20Minimal} from "@uniswap/v4-core/src/interfaces/external/IERC20Minimal.sol";
 import {console} from "forge-std/console.sol";
 import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
+import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
-// ----------- Plan -----------
-// The hook is designed for users to leverage their bonded asset as a counter-party with their asset to be deposited.
-// 1. Accept a bonded token - the "why?" is irrelevant for now... It can be to secure some other aspect of the protocol.
-// 2  Users can stake a single counterparty asset.
-// 3. Protocol will co-pool that asset it owns (bonded) alongside the counter-party asset.
+import {LiquidityAmounts} from "./libraries/LiquidityAmounts.sol";
 
-// Additionally, the protocol should allow boths assets to co-pool arbitrarily - ie. via single stake delegations.
-// 1. Users can delegate their token to the hook
-// 2. Hook will automatically co-pool the delegated token together as they're deposited independently.
+/*
+    Plan for Arbitrary Hook Integration with Uniswap Pool:
 
-// ----------- How it works -----------
-// 1. Implement `afterAddLiquidity`
-// 2. Implement `afterRemoveLiquidity`
-// Within the above, the hook will re-balance the delta if the user provides hookData instruction to use their bonded asset.
-//
-contract CoPoolHook is BaseHook, Ownable {
+    1. **Deposit Mechanism**:
+       - Allow deposits of either token in the pool.
+       - As a counter-party token enters, it is matched with excess from the other side.
+       - Utilize the LP (Liquidity Provider) paradigm as the deposit mechanism.
+       - Facilitate deposits through LP deposits. If no counter-party exists, the Hook will `take` from the PoolManager until a match is found.
+
+    2. **Integration Requirements**:
+       - A unique identifier (sender + salt) is will identify the delta LP position.
+
+    3. **Surety Protocol (Bonds) Integration**:
+       - A separate contract will manage the unlocking of SRF tokens and bond the stablecoin, holding the receipt for managing the modifyLiquidity of the Bond.
+       - Bond Management will be handled by the default Router.
+       - The CoPool Hook is a separate concern. Bond Management can actually integrate with UniswapV4’s default `PositionManager.sol` router.
+       - When a user deposits their SRF, it pools against any bond deposited as a single stake.
+       - Bonds deposited are held by the BondManager (Unlocker) Contract, allowing it to remove Bond for swap and SRF burn.
+
+    4. **Automated JIT Rebalancing**:
+       - The Hook will facilitate the injection of capital it holds during a Swap, enabling automated Just-In-Time (JIT) rebalancing.
+       - hookData will be used to determine the purpose of the liquidity addition.
+       - If the purpose is automated, the hook will JIT rebalance the delta.
+*/
+
+contract CoPoolHook is BaseHook {
     // Use CurrencyLibrary and BalanceDeltaLibrary
     // to add some helper functions over the Currency and BalanceDelta
     // data types
@@ -35,54 +49,27 @@ contract CoPoolHook is BaseHook, Ownable {
     using BalanceDeltaLibrary for BalanceDelta;
 
     // poolManager exists from BaseHook
-    bool private bondCurrencyIsOne;
-    address private bondCurrencyAddress;
-
-    mapping(address => uint256) public bondBalanceOf;
-    mapping(bytes => uint256) public bondOwed;
-    mapping(address => bool) public authorisedRouters;
 
     // liquidity actions
-    bytes public constant BOND = hex"00";
-    bytes public constant DELEGATE = hex"01";
+    bytes public constant COPOOL = hex"00";
+
+    int256 public deltaOfToken0;
+    int256 public deltaOfToken1;
+
+    mapping(bytes => int256) public token0DeltaFor;
+    mapping(bytes => int256) public token1DeltaFor;
 
     error OnlyByPoolManager();
-    error OnlyByAuthorisedRouter();
-
-    // ? Ownership of bonded assets is correlated to the Salt for Uv4 PositionManager - and this logic is specific to the router.
-    // Therefore, only routers that correlate ownership of receipt to the Salt can leverage the pool.
-    // ie. PositionManager.sol from Uv4 Periphery has `salt` =  `bytes32(tokenId)`
-    // Eventually, we can default to tx.origin, but for now we'll keep it as is.
-    modifier onlyByAuthorisedRouter(address sender) {
-        if (!authorisedRouters[sender]) revert OnlyByAuthorisedRouter();
-        _;
-    }
 
     // Initialize BaseHook and ERC20
-    constructor(IPoolManager _manager, address _bondCurrencyAddress, address[] memory _authorisedRouters)
-        BaseHook(_manager)
-        Ownable(_msgSender())
-    {
-        bondCurrencyAddress = _bondCurrencyAddress;
-        for (uint256 i = 0; i < _authorisedRouters.length; i++) {
-            authorisedRouters[_authorisedRouters[i]] = true;
-        }
-    }
-
-    function addAuthorisedRouter(address _router) external onlyOwner {
-        authorisedRouters[_router] = true;
-    }
-
-    function removeAuthorisedRouter(address _router) external onlyOwner {
-        authorisedRouters[_router] = false;
-    }
+    constructor(IPoolManager _manager) BaseHook(_manager) {}
 
     // Set up hook permissions to return `true`
     // for the two hook functions we are using
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: false,
-            afterInitialize: true,
+            afterInitialize: false,
             beforeAddLiquidity: false,
             beforeRemoveLiquidity: false,
             afterAddLiquidity: true,
@@ -96,52 +83,6 @@ contract CoPoolHook is BaseHook, Ownable {
             afterAddLiquidityReturnDelta: true,
             afterRemoveLiquidityReturnDelta: false
         });
-    }
-
-    /// @notice The hook called after the state of a pool is initialized
-    /// -param sender The initial msg.sender for the initialize call
-    /// @param key The key for the pool being initialized
-    /// -param sqrtPriceX96 The sqrt(price) of the pool as a Q64.96
-    /// -param tick The current tick after the state of a pool is initialized
-    /// @return bytes4 The function selector for the hook
-    function afterInitialize(address, PoolKey calldata key, uint160, int24)
-        external
-        override
-        onlyPoolManager
-        returns (bytes4)
-    {
-        // We set the bond currency to be the token of the pool that matches address of bondCurrencyAddress
-        if (Currency.unwrap(key.currency0) == bondCurrencyAddress) {
-            bondCurrencyIsOne = false;
-        } else if (Currency.unwrap(key.currency1) == bondCurrencyAddress) {
-            bondCurrencyIsOne = true;
-        } else {
-            revert("Bond currency not found in pool");
-        }
-
-        return (this.afterInitialize.selector);
-    }
-
-    // Deposit the bond currency into the contract
-
-    // TODO: Could also turn this into a deposit for either token in the pool. Then there would be no correlation between the bond currency and the counter-party asset.
-    function deposit(uint256 amount) external {
-        address sender = _msgSender();
-        // address sender = tx.origin;
-        IERC20Minimal(bondCurrencyAddress).transferFrom(sender, address(this), amount);
-        bondBalanceOf[sender] += amount;
-
-        // Now that bonds have been deposited for some purpose, we can perform some other logic...
-        // ie. In Surety Protocol, we unlock tokenised assets now that they're secured by a bonded asset.
-    }
-
-    // Withdraw the bond currency from the contract
-    function withdraw(uint256 amount) external {
-        address sender = _msgSender();
-        // address sender = tx.origin;
-        require(bondBalanceOf[sender] >= amount, "Insufficient bond balance");
-        Currency.wrap(bondCurrencyAddress).transfer(sender, amount);
-        bondBalanceOf[sender] -= amount;
     }
 
     /// @notice The hook called after liquidity is added
@@ -160,17 +101,82 @@ contract CoPoolHook is BaseHook, Ownable {
         BalanceDelta delta,
         BalanceDelta,
         bytes calldata hookData
-    ) external override onlyPoolManager onlyByAuthorisedRouter(sender) returns (bytes4, BalanceDelta) {
+    ) external override onlyPoolManager returns (bytes4, BalanceDelta) {
         // Check hookData for instruction to use bond currency
         if (hookData.length == 0) {
             return (this.afterAddLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
         }
 
+        // Decode the hookData
+        (bytes memory identifier, uint8 tokenSelection) = abi.decode(hookData, (bytes, uint8));
+
         // If so, re-balance the delta
-        if (hookData.length == BOND.length && keccak256(hookData) == keccak256(BOND)) {
-            // Validate that the user has enough available bonds to use.
-            // The kicker is that the sender is the router, not the user.
-            // Therefore, here we use the tx.origin.
+        if (identifier.length == COPOOL.length && keccak256(identifier) == keccak256(COPOOL)) {
+            // Extract the token selection for single stake from hookData. The value should be 0 or 1.
+            require(tokenSelection == 0 || tokenSelection == 1, "Invalid token selection");
+
+            // Now we check if the Hook has pending counterparty tokens to match with the selected token deposit.
+            // If not, we take from the PoolManager until a match is found.
+            // If there are pending counterparty tokens, we match the deposit with the counterparty tokens.
+
+            // ? For a deposit, the caller delta will be negative indicating that the caller is in a deficit relative to the pool
+            int256 amount0 = delta.amount0();
+            int256 amount1 = delta.amount1();
+
+            bytes memory callerId = abi.encodePacked(sender, params.salt);
+
+            if (tokenSelection == 0) {
+                // token0DeltaFor[callerId] += amount0; // this negative value means that the caller is in a deficit position relative to the hook
+
+                // The more negative the deltaOfToken0, the more deficit the callers are to the hook. Therefore, the hook has more token than amount1
+                if (deltaOfToken1 <= amount1) {
+                    // We can match the deposit
+                    // Settle the amount0 from the hook to the poolManager
+                    deltaOfToken0 -= amount0; // negative minus negative is positive
+                    _settle(key.currency0, poolManager, address(this), SignedMath.abs(amount0));
+                } else {
+                    // match amount is what is whatever is available.
+                    int256 matchDelta = deltaOfToken1;
+                    int256 newDelta1 = amount1 - matchDelta;
+                    deltaOfToken1 -= matchDelta;
+
+                    // adding liquidity means that the deltas are negative.
+                    if (matchDelta < 0) {
+                        _settle(key.currency1, poolManager, address(this), SignedMath.abs(matchDelta));
+                    }
+
+                    // Now account for the new delta0 relative to newDelta1, and deduct from the original amount1. The difference is what the hook takes.
+                    // This should allow for the LP to provide some token0 liquidity to match the remaining token1, that was not covered in a match by the Hook.
+                    PoolId poolId = key.toId();
+                    uint256 liquidity = StateLibrary.getLiquidity(manager, poolId);
+                    (, int24 tick,,) = StateLibrary.getSlot0(manager, poolId);
+                    uint160 sqrtPriceAX96 = TickMath.getSqrtRatioAtTick(tick + params.tickLower);
+                    uint160 sqrtPriceBX96 = TickMath.getSqrtRatioAtTick(tick + params.tickUpper);
+                    uint256 newAmount0 =
+                        LiquidityAmounts.getAmount0ForLiquidity(sqrtPriceAX96, sqrtPriceBX96, liquidity);
+                    int256 newDelta0 = -int256(newAmount0);
+
+                    BalanceDelta newDelta = toBalanceDelta(newDelta0, newDelta1);
+                    // _take(key.currency1, poolManager, address(this), SignedMath.abs(newDelta1));
+                }
+
+                if (pendingBalanceOfToken1 >= amount1) {
+                    // We can match the deposit.
+                    uint256 matchAmount = SignedMath.abs(delta.amount1());
+                    _settle(key.currency1, poolManager, address(this), matchAmount);
+                    pendingBalanceOfToken1 -= matchAmount;
+                    usedBalanceOfToken1 += matchAmount;
+                } else {
+                    // match amount is what is whatever is available.
+                    uint256 matchAmount = pendingBalanceOfToken1;
+                    uint256 newDelta = amount1 + matchAmount;
+                    // We now need to recalculate the delta for the difference to determine what token1 needs to be taken and held.
+
+                    // _take(key.currency1, poolManager, address(this), takeAmount);
+                }
+            } else {
+                // Else 1
+            }
 
             // if (bondBalanceOf[tx.origin] > 0) {
             //     // tokenId is the sender + salt.
@@ -181,10 +187,6 @@ contract CoPoolHook is BaseHook, Ownable {
             //     // Then, use equivalent in bond currency to co-pool.
             //     uint256 difference;
             //     // Determine which token has the lesser delta
-
-            // For a deposit, the caller delta will be negative indicating that the caller is in a deficit relative to the pool
-            int256 amount0 = delta.amount0();
-            int256 amount1 = delta.amount1();
 
             // console.log("amount0:");
             // console.log(amount0);
@@ -216,8 +218,6 @@ contract CoPoolHook is BaseHook, Ownable {
             // We also need to settle the hook's currency to the the poolManager
             _settle(key.currency0, poolManager, address(this), SignedMath.abs(delta.amount0()));
             return (this.afterAddLiquidity.selector, toBalanceDelta(delta.amount0(), 0));
-        } else if (hookData.length == DELEGATE.length && keccak256(hookData) == keccak256(DELEGATE)) {
-            // TODO: Implement
         }
 
         return (this.afterAddLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
