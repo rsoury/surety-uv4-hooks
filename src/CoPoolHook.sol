@@ -7,13 +7,10 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {BalanceDeltaLibrary, BalanceDelta, toBalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20Minimal} from "@uniswap/v4-core/src/interfaces/external/IERC20Minimal.sol";
 import {console} from "forge-std/console.sol";
 import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
-import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
-
-import {LiquidityAmounts} from "./libraries/LiquidityAmounts.sol";
+import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 
 /*
     Plan for Arbitrary Hook Integration with Uniswap Pool:
@@ -40,7 +37,7 @@ import {LiquidityAmounts} from "./libraries/LiquidityAmounts.sol";
        - If the purpose is automated, the hook will JIT rebalance the delta.
 */
 
-contract CoPoolHook is BaseHook {
+contract CoPoolHook is BaseHook, Context {
     // Use CurrencyLibrary and BalanceDeltaLibrary
     // to add some helper functions over the Currency and BalanceDelta
     // data types
@@ -112,13 +109,13 @@ contract CoPoolHook is BaseHook {
     // This way there is a counter-party token to match with the LP modifyPosition.
     function deposit(uint256 amount, bool isZero) external {
         address sender = _msgSender();
-        IERC20Minimal(isZero ? token0 : token1).transferFrom(sender, address(this), amount);
+        IERC20Minimal(Currency.unwrap(isZero ? token0 : token1)).transferFrom(sender, address(this), amount);
         if (isZero) {
             token0BalanceOf[sender] += amount;
-            deltaOfToken0 += -int256(amount);
+            deltaOfToken0 -= int256(amount);
         } else {
             token1BalanceOf[sender] += amount;
-            deltaOfToken1 += -int256(amount);
+            deltaOfToken1 -= int256(amount);
         }
     }
 
@@ -188,57 +185,39 @@ contract CoPoolHook is BaseHook {
                 // token0DeltaFor[callerId] += amount0; // this negative value means that the caller is in a deficit position relative to the hook
 
                 // The more negative the deltaOfToken0, the more deficit the callers are to the hook. Therefore, the hook has more token than amount1
-                int256 matchAmount;
+                int256 newDelta1;
                 if (deltaOfToken1 <= amount1) {
                     // We can match the deposit
                     // Settle the amount0 from the hook to the poolManager
                     deltaOfToken1 -= amount1; // negative minus negative is positive
-                    matchAmount = amount1;
+                    newDelta1 = amount1;
                 } else {
                     // match amount is what is whatever is available.
-                    int256 hookDelta1 = deltaOfToken1;
-                    // int256 newDelta1 = amount1 - matchDelta;
+                    newDelta1 = deltaOfToken1;
                     deltaOfToken1 = 0;
-
-                    // adding liquidity means that the deltas are negative.
-                    if (hookDelta1 < 0) {
-                        _settle(key.currency1, SignedMath.abs(hookDelta1));
-                    }
-
-                    hookDelta = toBalanceDelta(0, hookDelta1);
                 }
-                _settle(key.currency1, SignedMath.abs(matchAmount));
-                hookDelta = toBalanceDelta(0, matchAmount);
+                if (newDelta1 < 0) {
+                    _settle(key.currency1, SignedMath.abs(newDelta1));
+                }
+                hookDelta = toBalanceDelta(0, int128(newDelta1));
             } else {
                 // Else tokenSelection = 1
 
+                int256 newDelta0;
                 if (deltaOfToken0 <= amount0) {
                     // We can match the deposit
                     // Settle the amount0 from the hook to the poolManager
                     deltaOfToken0 -= amount0; // negative minus negative is positive
-                    _settle(key.currency0, SignedMath.abs(amount0));
-                    hookDelta = toBalanceDelta(amount0, 0);
+                    newDelta0 = amount0;
                 } else {
                     // match amount is what is whatever is available.
-                    int256 hookDelta0 = deltaOfToken0;
-                    // int256 newDelta1 = amount1 - matchDelta;
+                    newDelta0 = deltaOfToken0;
                     deltaOfToken0 = 0;
-
-                    // adding liquidity means that the deltas are negative.
-                    if (hookDelta0 < 0) {
-                        _settle(key.currency0, SignedMath.abs(hookDelta0));
-                    }
-
-                    // Now account for the new delta1 relative to newDelta0.
-                    // int256 hookDelta1 = (hookDelta0 / amount0) * amount1;
-                    int256 hookDelta1 =
-                        FullMath.mulDiv(SignedMath.abs(hookDelta0), SignedMath.abs(amount1), SignedMath.abs(amount0));
-                    deltaOfToken1 += hookDelta1;
-                    // hookDelta0 is positive indicating that the manager is in a deficit position relative to the hook.
-                    _take(key.currency1, hookDelta1);
-
-                    hookDelta = toBalanceDelta(hookDelta0, hookDelta1);
                 }
+                if (newDelta0 < 0) {
+                    _settle(key.currency0, SignedMath.abs(newDelta0));
+                }
+                hookDelta = toBalanceDelta(int128(newDelta0), 0);
             }
 
             // eg. Hook delta is negative for as the hook is now in a deficit position relative to the pool.
@@ -265,7 +244,7 @@ contract CoPoolHook is BaseHook {
     //     BalanceDelta delta,
     //     BalanceDelta feesAccrued,
     //     bytes calldata hookData
-    // ) external override onlyPoolManager onlyByAuthorisedRouter(sender) returns (bytes4, BalanceDelta) {
+    // ) external override onlyPoolManager returns (bytes4, BalanceDelta) {
     //     // TODO: Implement
 
     //     return (this.afterRemoveLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
