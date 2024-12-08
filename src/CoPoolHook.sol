@@ -123,14 +123,15 @@ contract CoPoolHook is BaseHook, Context {
     // Withdraw the bond currency from the contract
     function withdraw(uint256 amount, bool isZero) external {
         address sender = _msgSender();
+        int256 amountInt = int256(amount);
         if (isZero) {
             require(token0BalanceOf[sender] >= amount, "Insufficient balance for token0");
             // How much of token0 is in the CoPool?
-            if (amount + deltaOfToken0 > 0) {
+            if (amountInt + deltaOfToken0 > 0) {
                 // There is not enough liquid token0 to satisfy the withdrawal
                 // TODO: How do we handle this?
                 // Burn the co-pools to satisfy the withdrawal.
-                require(amount + deltaOfToken0 <= 0, "Insufficient liquidity in CoPool");
+                require(amountInt + deltaOfToken0 <= 0, "Insufficient liquidity in CoPool");
             }
 
             token0.transfer(sender, amount);
@@ -138,10 +139,10 @@ contract CoPoolHook is BaseHook, Context {
             deltaOfToken0 += int256(amount);
         } else {
             require(token1BalanceOf[sender] >= amount, "Insufficient balance for token1");
-            if (amount + deltaOfToken1 > 0) {
+            if (amountInt + deltaOfToken1 > 0) {
                 // There is not enough liquid token1 to satisfy the withdrawal
                 // TODO: How do we handle this?
-                require(amount + deltaOfToken1 <= 0, "Insufficient liquidity in CoPool");
+                require(amountInt + deltaOfToken1 <= 0, "Insufficient liquidity in CoPool");
             }
 
             token1.transfer(sender, amount);
@@ -274,7 +275,7 @@ contract CoPoolHook is BaseHook, Context {
     ) external override onlyPoolManager returns (bytes4, BalanceDelta) {
         // Check hookData for instruction to use bond currency
         if (hookData.length == 0) {
-            return (this.afterAddLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
+            return (this.afterRemoveLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
         }
 
         // Decode the hookData
@@ -317,9 +318,9 @@ contract CoPoolHook is BaseHook, Context {
 
                 // Hook is accepting back what was originally in a deficit.
                 // A positive delta means the hook is owed the asset.
-                if (newDelta1 > 0) {
-                    _take(key.currency1, SignedMath.abs(newDelta1));
-                }
+                // if (newDelta1 > 0) {
+                //     _take(key.currency1, SignedMath.abs(newDelta1));
+                // }
                 hookDelta = toBalanceDelta(0, int128(newDelta1));
             } else {
                 // Else tokenSelection = 1
@@ -342,14 +343,14 @@ contract CoPoolHook is BaseHook, Context {
 
                 // Hook is accepting back what was originally in a deficit.
                 // A positive delta means the hook is owed the asset.
-                if (newDelta0 > 0) {
-                    _take(key.currency0, SignedMath.abs(newDelta0));
-                }
+                // if (newDelta0 > 0) {
+                //     _take(key.currency0, SignedMath.abs(newDelta0));
+                // }
                 hookDelta = toBalanceDelta(int128(newDelta0), 0);
             }
 
             // eg. Hook delta is positive as the hooks is in arrears relative to the manager. The Hook owes the manager.
-            return (this.afterAddLiquidity.selector, hookDelta);
+            return (this.afterRemoveLiquidity.selector, hookDelta);
         }
 
         return (this.afterRemoveLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
