@@ -223,7 +223,7 @@ contract CoPoolHookTest is Test, Deployers {
         console.log("test_addSingleToken0Liquidity() - liquidity: ", liquidity);
         assertEq(liquidity, 1 ether);
 
-        // TODO: Needs more work here to still pass - seems related to the delta data types in the hook contract.
+        // TODO: Needs more work here to still pass - errors occured after change to delta data types in the hook contract.
         // performSwap();
 
         // -------------------------------------------------------------------------------------------------------------
@@ -237,7 +237,9 @@ contract CoPoolHookTest is Test, Deployers {
         (, uint256 afterAmount1) =
             LiquidityAmounts.getAmountsForLiquidity(sqrtPriceX96, sqrtPriceAX96, sqrtPriceBX96, liquidity);
 
-        uint256 diffInAmount1 = afterAmount1 - beforeAmount1 + 1; // TODO: Unsure where there's a discrepancy of 1... however could be associated with limits being set + 1 -- sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        uint256 diffInAmount1 = afterAmount1 - beforeAmount1 + 1;
+        // TODO: Unsure where/why there's a discrepancy of 1...
+        // however could be associated with limits being set + 1 -- sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         console.log("test_addSingleToken0Liquidity() - diffInAmount1: ", diffInAmount1);
 
         int256 newDeltaOfToken1 = hook.deltaOfToken1();
@@ -246,7 +248,7 @@ contract CoPoolHookTest is Test, Deployers {
 
         // Get address of the router.
         bytes memory callerId = abi.encodePacked(address(modifyLiquidityRouter), bytes32(tokenId));
-        int256 callerDeltaOfToken1 = hook.token1DeltaFor(callerId);
+        int128 callerDeltaOfToken1 = hook.token1DeltaFor(callerId);
         console.log("test_addSingleToken0Liquidity() - callerDeltaOfToken1: ", callerDeltaOfToken1);
         assertEq(callerDeltaOfToken1, -int256(diffInAmount1));
     }
@@ -279,12 +281,37 @@ contract CoPoolHookTest is Test, Deployers {
         modifyLiquidityRouter.modifyLiquidity(key, addParams, hookData);
 
         // Check the poolManager's balance of token0
-        uint256 liquidityAfterAdd = StateLibrary.getLiquidity(manager, poolId);
+        uint128 liquidityAfterAdd = StateLibrary.getLiquidity(manager, poolId);
         assertEq(liquidityAfterAdd, 1 ether);
+
+        int256 deltaT1AfterRemove = hook.deltaOfToken1();
 
         modifyLiquidityRouter.modifyLiquidity(key, removeParams, hookData);
 
-        uint256 liquidityAfterRemove = StateLibrary.getLiquidity(manager, poolId);
+        uint128 liquidityAfterRemove = StateLibrary.getLiquidity(manager, poolId);
         assertEq(liquidityAfterRemove, 0.5 ether);
+
+        // Calculate delta of token1
+        (, int24 tick,,) = StateLibrary.getSlot0(manager, poolId);
+        uint160 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(tick);
+        uint160 sqrtPriceAX96 = TickMath.getSqrtPriceAtTick(tick - 60);
+        uint160 sqrtPriceBX96 = TickMath.getSqrtPriceAtTick(tick + 60);
+        (, uint256 beforeAmount1) =
+            LiquidityAmounts.getAmountsForLiquidity(sqrtPriceX96, sqrtPriceAX96, sqrtPriceBX96, liquidityAfterAdd);
+        (, uint256 afterAmount1) =
+            LiquidityAmounts.getAmountsForLiquidity(sqrtPriceX96, sqrtPriceAX96, sqrtPriceBX96, liquidityAfterRemove);
+
+        uint256 diffInAmount1 = beforeAmount1 - afterAmount1; // before liquidity > after liquidity
+
+        int256 deltaT1AfterAdd = hook.deltaOfToken1();
+        // new delta of token1 should be the original delta - diffInAmount1
+        console.log("test_removeSingleToken0Liquidity() - deltaT1AfterRemove: ", deltaT1AfterRemove);
+        console.log("test_removeSingleToken0Liquidity() - deltaT1AfterAdd: ", deltaT1AfterAdd);
+        console.log("test_removeSingleToken0Liquidity() - diffInAmount1: ", diffInAmount1);
+        assertEq(deltaT1AfterRemove, deltaT1AfterAdd + int256(diffInAmount1));
+
+        // // Test to ensure hook contract has balance back
+        // uint256 token1Balance = MockERC20(Currency.unwrap(token1)).balanceOf(address(hook));
+        // assertEq(token1Balance, 9.5 ether); // original 10 ether - 0.5 ether of liquidity remaining pooled.
     }
 }
