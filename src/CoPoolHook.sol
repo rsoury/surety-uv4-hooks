@@ -62,6 +62,7 @@ contract CoPoolHook is BaseHook, Context {
     mapping(address => uint256) public token1BalanceOf;
 
     error OnlyByPoolManager();
+    error InvalidTokenSelection();
 
     // Initialize BaseHook and ERC20
     constructor(IPoolManager _manager) BaseHook(_manager) {}
@@ -164,7 +165,9 @@ contract CoPoolHook is BaseHook, Context {
         // If so, re-balance the delta
         if (identifier.length == COPOOL.length && keccak256(identifier) == keccak256(COPOOL)) {
             // Extract the token selection for single stake from hookData. The value should be 0 or 1.
-            require(tokenSelection == 0 || tokenSelection == 1, "Invalid token selection");
+            if (tokenSelection != 0 && tokenSelection != 1) {
+                revert InvalidTokenSelection();
+            }
 
             // Now we check if the Hook has pending counterparty tokens to match with the selected token deposit.
             // If not, we take from the PoolManager until a match is found.
