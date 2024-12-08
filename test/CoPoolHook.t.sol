@@ -47,7 +47,7 @@ contract CoPoolHookTest is Test, Deployers {
 
     function performSwap() internal {
         // Do a swap to adjust the tick
-        // From oneForZero to make tick go down.
+        // From oneForZero to make tick go up
         // Cannot use !zeroForOne to make tick go up, as we've purposely unapproved token1 from the swapRouter and modifyLiquidityRouter.
         IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
             zeroForOne: true,
@@ -223,6 +223,7 @@ contract CoPoolHookTest is Test, Deployers {
         console.log("test_addSingleToken0Liquidity() - liquidity: ", liquidity);
         assertEq(liquidity, 1 ether);
 
+        // TODO: Needs more work here to still pass - seems related to the delta data types in the hook contract.
         // performSwap();
 
         // -------------------------------------------------------------------------------------------------------------
@@ -251,41 +252,28 @@ contract CoPoolHookTest is Test, Deployers {
     }
 
     function test_removeSingleToken0Liquidity() public {
-        // Approve and stake token1
-        // MockERC20(Currency.unwrap(token0)).approve(address(hook), 10 ether);
-
-        MockERC20(Currency.unwrap(token1)).approve(address(hook), 10 ether);
-        // Unapprove token1 from swapRouter and modifyLiquidityRouter to prevent it from being staked.
-        MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), 0);
-        MockERC20(Currency.unwrap(token1)).approve(address(modifyLiquidityRouter), 0);
-        hook.deposit(10 ether, false); // deposit token1
+        setupDepositForSingleStake();
 
         int256 deltaOfToken1 = hook.deltaOfToken1();
-        console.log("test_addSingleToken0Liquidity() - Before modifyLiquidity - deltaOfToken1: ", deltaOfToken1);
+        console.log("test_removeSingleToken0Liquidity() - Before modifyLiquidity - deltaOfToken1: ", deltaOfToken1);
         assertEq(deltaOfToken1, -10 ether);
 
-        bytes memory action = hook.COPOOL();
-        uint8 tokenSelection = 0;
-
-        bytes memory hookData = abi.encode(action, tokenSelection);
+        bytes memory hookData = prepareHookData(0);
 
         PoolId poolId = key.toId();
-        uint256 liquidityBefore = StateLibrary.getLiquidity(manager, poolId);
 
-        uint256 tokenId1 = 120;
-        uint256 tokenId2 = 121;
-        uint256 tokenId3 = 122;
+        uint256 tokenId = 120;
         IPoolManager.ModifyLiquidityParams memory addParams = IPoolManager.ModifyLiquidityParams({
             tickLower: -60,
             tickUpper: 60,
             liquidityDelta: 1 ether,
-            salt: bytes32(tokenId1) // Arbitrary salt - however used in the protocol to identify the tokenId.
+            salt: bytes32(tokenId)
         });
         IPoolManager.ModifyLiquidityParams memory removeParams = IPoolManager.ModifyLiquidityParams({
             tickLower: -60,
             tickUpper: 60,
             liquidityDelta: -0.5 ether,
-            salt: bytes32(tokenId1) // Arbitrary salt - however used in the protocol to identify the tokenId.
+            salt: bytes32(tokenId)
         });
         // This will single stake token0 and co-pool it against the token1 already deposited.
         modifyLiquidityRouter.modifyLiquidity(key, addParams, hookData);

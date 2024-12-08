@@ -55,8 +55,8 @@ contract CoPoolHook is BaseHook, Context {
     int256 public deltaOfToken0;
     int256 public deltaOfToken1;
 
-    mapping(bytes => int256) public token0DeltaFor;
-    mapping(bytes => int256) public token1DeltaFor;
+    mapping(bytes => int128) public token0DeltaFor;
+    mapping(bytes => int128) public token1DeltaFor;
 
     mapping(address => uint256) public token0BalanceOf;
     mapping(address => uint256) public token1BalanceOf;
@@ -136,7 +136,7 @@ contract CoPoolHook is BaseHook, Context {
 
             token0.transfer(sender, amount);
             token0BalanceOf[sender] -= amount;
-            deltaOfToken0 += int256(amount);
+            deltaOfToken0 += amountInt;
         } else {
             require(token1BalanceOf[sender] >= amount, "Insufficient balance for token1");
             if (amountInt + deltaOfToken1 > 0) {
@@ -147,7 +147,7 @@ contract CoPoolHook is BaseHook, Context {
 
             token1.transfer(sender, amount);
             token1BalanceOf[sender] -= amount;
-            deltaOfToken1 += int256(amount);
+            deltaOfToken1 += amountInt;
         }
     }
 
@@ -188,8 +188,8 @@ contract CoPoolHook is BaseHook, Context {
             // If there are pending counterparty tokens, we match the deposit with the counterparty tokens.
 
             // ? For a deposit, the caller delta will be negative indicating that the caller is in a deficit relative to the pool
-            int256 amount0 = delta.amount0();
-            int256 amount1 = delta.amount1();
+            int128 amount0 = delta.amount0();
+            int128 amount1 = delta.amount1();
 
             // Manage ownership - ie. Who is creating the CoPool position?
             // ! If the Router does not specify a salt that identifies the position, then the hook assumes the router manages the position.
@@ -201,10 +201,8 @@ contract CoPoolHook is BaseHook, Context {
             if (tokenSelection == 0) {
                 // Here, we're now matching what token1 is available since token0 is being deposited.
 
-                // token0DeltaFor[callerId] += amount0; // this negative value means that the caller is in a deficit position relative to the hook
-
                 // The more negative the deltaOfToken0, the more deficit the callers are to the hook. Therefore, the hook has more token than amount1
-                int256 newDelta1;
+                int128 newDelta1;
                 if (deltaOfToken1 <= amount1) {
                     // We can match the deposit
                     // Settle the amount0 from the hook to the poolManager
@@ -214,7 +212,7 @@ contract CoPoolHook is BaseHook, Context {
                     newDelta1 = amount1;
                 } else {
                     // match amount is what is whatever is available.
-                    newDelta1 = deltaOfToken1;
+                    newDelta1 = int128(deltaOfToken1);
                     deltaOfToken1 = 0;
                 }
                 // We add the amount1 to caller's delta. This way we know how much the caller position is made of the Hook's funds
@@ -224,11 +222,11 @@ contract CoPoolHook is BaseHook, Context {
                 if (newDelta1 < 0) {
                     _settle(key.currency1, SignedMath.abs(newDelta1));
                 }
-                hookDelta = toBalanceDelta(0, int128(newDelta1));
+                hookDelta = toBalanceDelta(0, newDelta1);
             } else {
                 // Else tokenSelection = 1
 
-                int256 newDelta0;
+                int128 newDelta0;
                 if (deltaOfToken0 <= amount0) {
                     // We can match the deposit
                     // Settle the amount0 from the hook to the poolManager
@@ -236,7 +234,8 @@ contract CoPoolHook is BaseHook, Context {
                     newDelta0 = amount0;
                 } else {
                     // match amount is what is whatever is available.
-                    newDelta0 = deltaOfToken0;
+                    // ! This could break in an edge case because of varying data types.
+                    newDelta0 = int128(deltaOfToken0);
                     deltaOfToken0 = 0;
                 }
                 // We add the amount0 to caller's delta. This way we know how much the caller is in a deficit relative to the Hook - ie. how much of the LP is theirs.
@@ -245,7 +244,7 @@ contract CoPoolHook is BaseHook, Context {
                 if (newDelta0 < 0) {
                     _settle(key.currency0, SignedMath.abs(newDelta0));
                 }
-                hookDelta = toBalanceDelta(int128(newDelta0), 0);
+                hookDelta = toBalanceDelta(newDelta0, 0);
             }
 
             // eg. Hook delta is negative as the hook is now in a deficit position relative to the pool.
@@ -289,8 +288,8 @@ contract CoPoolHook is BaseHook, Context {
             }
 
             // ? For a withdraw, the caller delta will be positive indicating that the caller is expecting funds from the pool
-            int256 amount0 = delta.amount0();
-            int256 amount1 = delta.amount1();
+            int128 amount0 = delta.amount0();
+            int128 amount1 = delta.amount1();
 
             // Identify the caller's position
             bytes memory callerId = abi.encodePacked(sender, params.salt);
@@ -300,53 +299,23 @@ contract CoPoolHook is BaseHook, Context {
             if (tokenSelection == 0) {
                 // Here, we're now determining how much of the counter-party asset (token1) in the co-pool is taken back by the Hook.
 
-                int256 newDelta1;
-                int256 token1Diff = amount1 + token1DeltaFor[callerId];
-                if (token1Diff >= 0) {
-                    // The caller is withdrawing more than their deficit - ie. +1000 (withdraw 1000) + -500 (deficit of 500) = +500
-                    // The entire deficit is settled
-                    newDelta1 = -token1DeltaFor[callerId];
-                    token1DeltaFor[callerId] = 0;
-                    deltaOfToken1 -= newDelta1; // We add what's taken by the the hook to the total delta of token1
-                } else {
-                    // The caller is withdrawing less than their deficit
-                    // - ie. +200 (withdraw 200) + -500 (deficit of 500) = -300
-                    newDelta1 = amount1; // amount1 is positive for withdraw
-                    token1DeltaFor[callerId] = token1Diff; // The new caller delta is the difference between what was taken and what was in a deficit
-                    deltaOfToken1 -= newDelta1; // We add what's taken by the the hook to the total delta of token1
-                }
-
+                int128 newDelta1 = removeCoPool(amount1, true, callerId);
                 // Hook is accepting back what was originally in a deficit.
                 // A positive delta means the hook is owed the asset.
-                // if (newDelta1 > 0) {
-                //     _take(key.currency1, SignedMath.abs(newDelta1));
-                // }
-                hookDelta = toBalanceDelta(0, int128(newDelta1));
+                if (newDelta1 > 0) {
+                    _take(key.currency1, SignedMath.abs(newDelta1));
+                }
+                hookDelta = toBalanceDelta(0, newDelta1);
             } else {
                 // Else tokenSelection = 1
 
-                int256 newDelta0;
-                int256 token0Diff = amount0 + token0DeltaFor[callerId];
-                if (token0Diff >= 0) {
-                    // The caller is withdrawing more than their deficit - ie. +1000 (withdraw 1000) + -500 (deficit of 500) = +500
-                    // The entire deficit is settled
-                    newDelta0 = -token0DeltaFor[callerId];
-                    token0DeltaFor[callerId] = 0;
-                    deltaOfToken0 -= newDelta0; // We add what's taken by the the hook to the total delta of token0
-                } else {
-                    // The caller is withdrawing less than their deficit
-                    // - ie. +200 (withdraw 200) + -500 (deficit of 500) = -300
-                    newDelta0 = amount0; // amount0 is positive for withdraw
-                    token0DeltaFor[callerId] = token0Diff; // The new caller delta is the difference between what was taken and what was in a deficit
-                    deltaOfToken0 -= newDelta0; // We add what's taken by the the hook to the total delta of token0
-                }
-
+                int128 newDelta0 = removeCoPool(amount0, false, callerId);
                 // Hook is accepting back what was originally in a deficit.
                 // A positive delta means the hook is owed the asset.
-                // if (newDelta0 > 0) {
-                //     _take(key.currency0, SignedMath.abs(newDelta0));
-                // }
-                hookDelta = toBalanceDelta(int128(newDelta0), 0);
+                if (newDelta0 > 0) {
+                    _take(key.currency0, SignedMath.abs(newDelta0));
+                }
+                hookDelta = toBalanceDelta(newDelta0, 0);
             }
 
             // eg. Hook delta is positive as the hooks is in arrears relative to the manager. The Hook owes the manager.
@@ -354,6 +323,43 @@ contract CoPoolHook is BaseHook, Context {
         }
 
         return (this.afterRemoveLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
+    }
+
+    function removeCoPool(int128 amount, bool forZeroTokenSelection, bytes memory callerId)
+        internal
+        returns (int128 delta)
+    {
+        if (forZeroTokenSelection) {
+            int128 token1Diff = amount + token1DeltaFor[callerId];
+            if (token1Diff >= 0) {
+                // The caller is withdrawing more than their deficit - ie. +1000 (withdraw 1000) + -500 (deficit of 500) = +500
+                // The entire deficit is settled
+                delta = -token1DeltaFor[callerId];
+                token1DeltaFor[callerId] = 0;
+                deltaOfToken1 -= delta; // We add what's taken by the the hook to the total delta of token1
+            } else {
+                // The caller is withdrawing less than their deficit
+                // - ie. +200 (withdraw 200) + -500 (deficit of 500) = -300
+                delta = amount; // amount1 is positive for withdraw
+                token1DeltaFor[callerId] = token1Diff; // The new caller delta is the difference between what was taken and what was in a deficit
+                deltaOfToken1 -= delta; // We add what's taken by the the hook to the total delta of token1
+            }
+        } else {
+            int128 token0Diff = amount + token0DeltaFor[callerId];
+            if (token0Diff >= 0) {
+                // The caller is withdrawing more than their deficit - ie. +1000 (withdraw 1000) + -500 (deficit of 500) = +500
+                // The entire deficit is settled
+                delta = -token0DeltaFor[callerId];
+                token0DeltaFor[callerId] = 0;
+                deltaOfToken0 -= delta; // We add what's taken by the the hook to the total delta of token0
+            } else {
+                // The caller is withdrawing less than their deficit
+                // - ie. +200 (withdraw 200) + -500 (deficit of 500) = -300
+                delta = amount; // amount0 is positive for withdraw
+                token0DeltaFor[callerId] = token0Diff; // The new caller delta is the difference between what was taken and what was in a deficit
+                deltaOfToken0 -= delta; // We add what's taken by the the hook to the total delta of token0
+            }
+        }
     }
 
     // Adopted from: https://github.com/Uniswap/v4-core/blob/182712cf7146f31cd5c969749bbe3a188f030d1a/test/utils/CurrencySettler.sol#L19
