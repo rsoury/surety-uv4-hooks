@@ -125,12 +125,25 @@ contract CoPoolHook is BaseHook, Context {
         address sender = _msgSender();
         if (isZero) {
             require(token0BalanceOf[sender] >= amount, "Insufficient balance for token0");
-            // TODO: We'll need to unpool what has been matched already.
+            // How much of token0 is in the CoPool?
+            if (amount + deltaOfToken0 > 0) {
+                // There is not enough liquid token0 to satisfy the withdrawal
+                // TODO: How do we handle this?
+                // Burn the co-pools to satisfy the withdrawal.
+                require(amount + deltaOfToken0 <= 0, "Insufficient liquidity in CoPool");
+            }
+
             token0.transfer(sender, amount);
             token0BalanceOf[sender] -= amount;
             deltaOfToken0 += int256(amount);
         } else {
             require(token1BalanceOf[sender] >= amount, "Insufficient balance for token1");
+            if (amount + deltaOfToken1 > 0) {
+                // There is not enough liquid token1 to satisfy the withdrawal
+                // TODO: How do we handle this?
+                require(amount + deltaOfToken1 <= 0, "Insufficient liquidity in CoPool");
+            }
+
             token1.transfer(sender, amount);
             token1BalanceOf[sender] -= amount;
             deltaOfToken1 += int256(amount);
