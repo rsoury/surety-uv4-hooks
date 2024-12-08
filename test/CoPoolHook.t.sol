@@ -311,7 +311,8 @@ contract CoPoolHookTest is Test, Deployers {
         assertEq(deltaT1AfterRemove, deltaT1AfterAdd + int256(diffInAmount1));
 
         // // Test to ensure hook contract has balance back
-        // uint256 token1Balance = MockERC20(Currency.unwrap(token1)).balanceOf(address(hook));
-        // assertEq(token1Balance, 9.5 ether); // original 10 ether - 0.5 ether of liquidity remaining pooled.
+        uint256 token1Balance = MockERC20(Currency.unwrap(token1)).balanceOf(address(hook));
+        console.log("test_removeSingleToken0Liquidity() - token1Balance: ", token1Balance);
+        assertEq(token1Balance, 10 ether - afterAmount1 - 1); // original 10 ether - 0.5 ether of liquidity remaining pooled.
     }
 }

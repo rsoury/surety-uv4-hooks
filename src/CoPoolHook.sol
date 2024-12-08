@@ -131,7 +131,7 @@ contract CoPoolHook is BaseHook, Context {
             if (amountInt + deltaOfToken0 > 0) {
                 // There is not enough liquid token0 to satisfy the withdrawal
                 // TODO: How do we handle this?
-                // Burn the co-pools to satisfy the withdrawal.
+                // Burn the co-pools to satisfy the withdrawal - kicker is that this may require permission of the LP
                 require(amountInt + deltaOfToken0 <= 0, "Insufficient liquidity in CoPool");
             }
 
