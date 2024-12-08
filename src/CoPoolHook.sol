@@ -100,6 +100,7 @@ contract CoPoolHook is BaseHook, Context {
         onlyPoolManager
         returns (bytes4)
     {
+        // TODO: Maybe manage tokens per sender to avoid re-deployment per new pool - but rather pre-deployed hook per new poo.
         token0 = key.currency0;
         token1 = key.currency1;
 
